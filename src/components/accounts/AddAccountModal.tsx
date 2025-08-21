@@ -2,6 +2,7 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
+import { useAuth } from '@/providers/AuthProvider';
 
 import {
   Dialog,
@@ -22,7 +23,7 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useModalStore } from '@/store/ui-store';
-import { accountRepository } from '@/lib/repo/localStorage';
+import { accountRepository } from '@/lib/repo';
 import { createAccountSchema, CreateAccountFormData } from '@/lib/validations/schemas';
 import { Account } from '@/lib/domain/types';
 
@@ -30,6 +31,7 @@ export default function AddAccountModal() {
   const { isAddAccountOpen, setAddAccountOpen } = useModalStore();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { user } = useAuth(); // Kullanıcı oturum durumunu kontrol et
 
   const {
     register,
@@ -43,6 +45,7 @@ export default function AddAccountModal() {
     defaultValues: {
       type: 'PreFunded',
     },
+    shouldUnregister: true,
   });
 
   const accountType = watch('type');
@@ -59,26 +62,88 @@ export default function AddAccountModal() {
       setAddAccountOpen(false);
       reset();
     },
-    onError: () => {
+    onError: (error: Error) => {
       toast({
         title: 'Hata',
-        description: 'Hesap oluşturulurken bir hata oluştu.',
+        description: error?.message || 'Hesap oluşturulurken bir hata oluştu.',
         variant: 'destructive',
       });
     },
   });
 
   const onSubmit = (data: CreateAccountFormData) => {
-    createAccountMutation.mutate({
-      name: data.name,
-      type: data.type,
-      starting_balance: data.starting_balance,
-      current_balance: data.starting_balance,
-      risk_current_pct: 1.00, // Initial risk percentage
-      funded_threshold: data.funded_threshold,
-      daily_loss_limit: data.daily_loss_limit,
-      max_loss_amount: data.max_loss_amount,
-      profit_target: data.profit_target,
+    console.log("Form gönderildi:", data);
+    console.log("Kullanıcı oturum durumu:", user);
+    
+    if (!user) {
+      console.error("Kullanıcı oturum açmamış!");
+      toast({
+        title: "Oturum Hatası",
+        description: "Oturumunuz sonlanmış olabilir. Lütfen yeniden giriş yapın.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    // Form verilerini kontrol et
+    if (data.type === 'Funded' && (!data.daily_loss_limit || !data.max_loss_amount || !data.profit_target)) {
+      console.error("Funded hesap için gerekli alanlar eksik:", {
+        daily_loss_limit: data.daily_loss_limit,
+        max_loss_amount: data.max_loss_amount,
+        profit_target: data.profit_target
+      });
+      toast({
+        title: "Form Hatası",
+        description: "Funded hesap için tüm alanları doldurun: Günlük Kayıp Limiti, Maksimum Kayıp Tutarı ve Kâr Hedefi",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    if (data.type === 'PreFunded' && (!data.funded_threshold || !data.daily_loss_limit || !data.max_loss_amount)) {
+      console.error("PreFunded hesap için gerekli alanlar eksik:", {
+        funded_threshold: data.funded_threshold,
+        daily_loss_limit: data.daily_loss_limit,
+        max_loss_amount: data.max_loss_amount
+      });
+      toast({
+        title: "Form Hatası",
+        description: "PreFunded hesap için tüm alanları doldurun: Funded Eşiği, Günlük Kayıp Limiti ve Maksimum Kayıp Tutarı",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    // Hesap türüne göre doğru veri yapısı oluştur
+    const accountData = data.type === 'PreFunded' 
+      ? {
+          name: data.name,
+          type: 'PreFunded' as const,
+          starting_balance: data.starting_balance,
+          current_balance: data.starting_balance,
+          risk_current_pct: 1.00,
+          funded_threshold: data.funded_threshold!,
+          daily_loss_limit: data.daily_loss_limit!,
+          max_loss_amount: data.max_loss_amount!,
+        }
+      : {
+          name: data.name,
+          type: 'Funded' as const,
+          starting_balance: data.starting_balance,
+          current_balance: data.starting_balance,
+          risk_current_pct: 1.00,
+          daily_loss_limit: data.daily_loss_limit!,
+          max_loss_amount: data.max_loss_amount!,
+          profit_target: data.profit_target!,
+        };
+    
+    console.log("Supabase'e gönderilecek veri:", accountData);
+    
+    // Mutation'ı çalıştır
+    createAccountMutation.mutate(accountData, {
+      onError: (error: Error) => {
+        console.error("Hesap oluşturma hatası (mutation):", error);
+      }
     });
   };
 
@@ -95,7 +160,18 @@ export default function AddAccountModal() {
         <motion.form
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          onSubmit={handleSubmit(onSubmit)}
+          onSubmit={handleSubmit(onSubmit, (formErrors) => {
+            console.error('Hesap formu geçersiz:', formErrors);
+            toast({
+              title: 'Form Hatası',
+              description: 'Lütfen zorunlu alanları doldurun ve hataları düzeltin.',
+              variant: 'destructive',
+            });
+          })}
+          onSubmitCapture={(e) => {
+            console.log('Form submit yakalandı (capture).', e);
+          }}
+          noValidate
           className="space-y-4"
         >
           <div className="space-y-3">
@@ -117,7 +193,7 @@ export default function AddAccountModal() {
               name="type"
               control={control}
               render={({ field }) => (
-                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                <Select onValueChange={field.onChange} value={field.value}>
                   <SelectTrigger className={errors.type ? 'border-destructive focus:border-destructive' : ''}>
                     <SelectValue placeholder="Hesap türünü seçin" />
                   </SelectTrigger>
@@ -152,20 +228,55 @@ export default function AddAccountModal() {
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
-              className="space-y-3"
+              className="space-y-5"
             >
-              <Label htmlFor="funded_threshold" className="text-foreground font-semibold">Funded Eşiği ($)</Label>
-              <Input
-                id="funded_threshold"
-                type="number"
-                step="0.01"
-                placeholder="15000"
-                {...register('funded_threshold', { valueAsNumber: true })}
-                className={`font-medium ${errors.funded_threshold ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
-              />
-              {errors.funded_threshold && (
-                <p className="text-sm text-destructive font-medium">{errors.funded_threshold.message}</p>
-              )}
+              <div className="space-y-3">
+                <Label htmlFor="funded_threshold" className="text-foreground font-semibold">Funded Eşiği ($) *</Label>
+                <Input
+                  id="funded_threshold"
+                  type="number"
+                  step="0.01"
+                  placeholder="15000"
+                  required
+                  {...register('funded_threshold', { valueAsNumber: true })}
+                  className={`font-medium ${errors.funded_threshold ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
+                />
+                {errors.funded_threshold && (
+                  <p className="text-sm text-destructive font-medium">{errors.funded_threshold.message}</p>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <Label htmlFor="daily_loss_limit" className="text-foreground font-semibold">Günlük Kayıp Limiti ($) *</Label>
+                <Input
+                  id="daily_loss_limit"
+                  type="number"
+                  step="0.01"
+                  placeholder="500"
+                  required
+                  {...register('daily_loss_limit', { valueAsNumber: true })}
+                  className={`font-medium ${errors.daily_loss_limit ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
+                />
+                {errors.daily_loss_limit && (
+                  <p className="text-sm text-destructive font-medium">{errors.daily_loss_limit.message}</p>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <Label htmlFor="max_loss_amount" className="text-foreground font-semibold">Maksimum Kayıp Tutarı ($) *</Label>
+                <Input
+                  id="max_loss_amount"
+                  type="number"
+                  step="0.01"
+                  placeholder="2000"
+                  required
+                  {...register('max_loss_amount', { valueAsNumber: true })}
+                  className={`font-medium ${errors.max_loss_amount ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
+                />
+                {errors.max_loss_amount && (
+                  <p className="text-sm text-destructive font-medium">{errors.max_loss_amount.message}</p>
+                )}
+              </div>
             </motion.div>
           )}
 
@@ -176,12 +287,13 @@ export default function AddAccountModal() {
               className="space-y-5"
             >
               <div className="space-y-3">
-                <Label htmlFor="daily_loss_limit" className="text-foreground font-semibold">Günlük Kayıp Limiti ($)</Label>
+                <Label htmlFor="funded_daily_loss_limit" className="text-foreground font-semibold">Günlük Kayıp Limiti ($) *</Label>
                 <Input
-                  id="daily_loss_limit"
+                  id="funded_daily_loss_limit"
                   type="number"
                   step="0.01"
                   placeholder="500"
+                  required
                   {...register('daily_loss_limit', { valueAsNumber: true })}
                   className={`font-medium ${errors.daily_loss_limit ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
                 />
@@ -191,12 +303,13 @@ export default function AddAccountModal() {
               </div>
 
               <div className="space-y-3">
-                <Label htmlFor="max_loss_amount" className="text-foreground font-semibold">Maksimum Kayıp Tutarı ($)</Label>
+                <Label htmlFor="funded_max_loss_amount" className="text-foreground font-semibold">Maksimum Kayıp Tutarı ($) *</Label>
                 <Input
-                  id="max_loss_amount"
+                  id="funded_max_loss_amount"
                   type="number"
                   step="0.01"
                   placeholder="2000"
+                  required
                   {...register('max_loss_amount', { valueAsNumber: true })}
                   className={`font-medium ${errors.max_loss_amount ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
                 />
@@ -206,12 +319,13 @@ export default function AddAccountModal() {
               </div>
 
               <div className="space-y-3">
-                <Label htmlFor="profit_target" className="text-foreground font-semibold">Kâr Hedefi ($)</Label>
+                <Label htmlFor="profit_target" className="text-foreground font-semibold">Kâr Hedefi ($) *</Label>
                 <Input
                   id="profit_target"
                   type="number"
                   step="0.01"
                   placeholder="20000"
+                  required
                   {...register('profit_target', { valueAsNumber: true })}
                   className={`font-medium ${errors.profit_target ? 'border-destructive focus:border-destructive focus:ring-destructive' : 'focus:border-primary focus:ring-primary'}`}
                 />
@@ -236,6 +350,7 @@ export default function AddAccountModal() {
               variant="cosmic"
               disabled={isSubmitting}
               className="flex-1"
+              onClick={() => console.log('Hesap Oluştur butonuna tıklandı')}
             >
               {isSubmitting ? '🚀 Oluşturuluyor...' : '✨ Hesap Oluştur'}
             </Button>

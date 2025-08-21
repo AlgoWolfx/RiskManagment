@@ -1,40 +1,76 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Plus, Calendar, TrendingUp, TrendingDown } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { accountRepository, tradeRepository } from '@/lib/repo/localStorage';
+import { accountRepository, tradeRepository } from '@/lib/repo';
 import { calculateAccountMetrics, formatCurrency, formatPercentage } from '@/lib/domain/risk';
+import { Trade } from '@/lib/domain/types';
 import AddTradeModal from '@/components/trades/AddTradeModal';
 import TradeList from '@/components/trades/TradeList';
 import CalendarModal from '@/components/trades/CalendarModal';
 import { useModalStore } from '@/store/ui-store';
+import { useToast } from '@/hooks/use-toast';
 
 export default function AccountDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { setAddTradeOpen, setCalendarOpen } = useModalStore();
-
-  if (!id) {
-    navigate('/');
-    return null;
-  }
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   // Fetch account data
   const { data: account, isLoading: accountLoading } = useQuery({
     queryKey: ['account', id],
-    queryFn: () => accountRepository.getById(id),
+    queryFn: () => accountRepository.getById(id!),
+    enabled: !!id,
   });
 
   // Fetch trades for this account
   const { data: trades = [], isLoading: tradesLoading } = useQuery({
     queryKey: ['trades', id],
-    queryFn: () => tradeRepository.getByAccountId(id),
+    queryFn: () => tradeRepository.getByAccountId(id!),
+    enabled: !!id,
   });
+
+  // Delete trade mutation
+  const deleteTradeMutation = useMutation({
+    mutationFn: async (tradeId: string) => {
+      await tradeRepository.delete(tradeId);
+    },
+    onSuccess: async () => {
+      // Önce tüm cache'leri temizle
+      await queryClient.invalidateQueries({ queryKey: ['trades', id] });
+      await queryClient.invalidateQueries({ queryKey: ['account', id] });
+      await queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      
+      // Cache'i zorla yenile
+      await queryClient.refetchQueries({ queryKey: ['account', id] });
+      await queryClient.refetchQueries({ queryKey: ['accounts'] });
+      
+      toast({
+        title: 'İşlem silindi',
+        description: 'İşlem başarıyla silindi.',
+      });
+    },
+    onError: () => {
+      toast({
+        title: 'Hata',
+        description: 'İşlem silinirken bir hata oluştu.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Early returns after all hooks are defined
+  if (!id) {
+    navigate('/');
+    return null;
+  }
 
   if (accountLoading) {
     return (
@@ -51,8 +87,8 @@ export default function AccountDetail() {
       <div className="min-h-screen flex items-center justify-center gradient-card">
         <Card className="text-center p-8">
           <CardContent>
-            <h2 className="text-xl font-semibold mb-2">Hesap Bulunamadı</h2>
-            <p className="text-muted-foreground mb-4">
+            <h2 className="text-xl font-semibold mb-2 text-white">Hesap Bulunamadı</h2>
+            <p className="text-white/80 mb-4 font-medium">
               Bu hesap mevcut değil veya silinmiş olabilir.
             </p>
             <Button onClick={() => navigate('/')} variant="trading-primary">
@@ -76,6 +112,18 @@ export default function AccountDetail() {
     setCalendarOpen(true, account.id);
   };
 
+  const handleEditTrade = (trade: Trade) => {
+    // TODO: Implement edit trade functionality
+    toast({
+      title: 'Düzenleme',
+      description: 'İşlem düzenleme özelliği yakında eklenecek.',
+    });
+  };
+
+  const handleDeleteTrade = (trade: Trade) => {
+    deleteTradeMutation.mutate(trade.id);
+  };
+
   return (
     <div className="min-h-screen p-4 gradient-card">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -96,14 +144,14 @@ export default function AccountDetail() {
             </Button>
             <div>
               <div className="flex items-center gap-2 mb-1">
-                <h1 className="text-3xl font-bold">{account.name}</h1>
+                <h1 className="text-3xl font-bold text-white">{account.name}</h1>
                 <Badge 
                   variant={account.type === 'PreFunded' ? 'secondary' : 'default'}
                 >
                   {account.type}
                 </Badge>
               </div>
-              <p className="text-muted-foreground">
+              <p className="text-white/80 font-medium">
                 Hesap detayları ve işlem geçmişi
               </p>
             </div>
@@ -113,7 +161,7 @@ export default function AccountDetail() {
             <Button
               variant="trading"
               onClick={handleOpenCalendar}
-              className="flex-1 sm:flex-none"
+              className="flex-1 sm:flex-none text-white border-white/20 hover:bg-white/10"
             >
               <Calendar className="h-4 w-4" />
               Takvim
@@ -138,14 +186,14 @@ export default function AccountDetail() {
         >
           <Card className="gradient-card shadow-trading">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+              <CardTitle className="text-sm font-medium text-white">
                 Güncel Bakiye
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{formatCurrency(account.current_balance)}</div>
+              <div className="text-2xl font-bold text-white">{formatCurrency(account.current_balance)}</div>
               <div className={`text-sm flex items-center gap-1 mt-1 ${
-                isProfit ? 'profit-text' : isLoss ? 'loss-text' : 'text-muted-foreground'
+                isProfit ? 'profit-text' : isLoss ? 'loss-text' : 'text-white/80'
               }`}>
                 {isProfit ? (
                   <TrendingUp className="h-3 w-3" />
@@ -159,12 +207,12 @@ export default function AccountDetail() {
 
           <Card className="gradient-card shadow-trading">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+              <CardTitle className="text-sm font-medium text-white">
                 Risk Yüzdesi
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">
+              <div className="text-2xl font-bold text-white">
                 {formatPercentage(account.risk_current_pct)}
               </div>
               <div className="text-sm text-warning">
@@ -175,13 +223,13 @@ export default function AccountDetail() {
 
           <Card className="gradient-card shadow-trading">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+              <CardTitle className="text-sm font-medium text-white">
                 Toplam İşlem
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{trades.length}</div>
-              <div className="text-sm text-muted-foreground">
+              <div className="text-2xl font-bold text-white">{trades.length}</div>
+              <div className="text-sm text-white/80 font-medium">
                 Kayıtlı işlem sayısı
               </div>
             </CardContent>
@@ -189,12 +237,48 @@ export default function AccountDetail() {
 
           <Card className="gradient-card shadow-trading">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
+              <CardTitle className="text-sm font-medium text-white">
                 Başlangıç Bakiyesi
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{formatCurrency(account.starting_balance)}</div>
+              <div className="text-2xl font-bold text-white">{formatCurrency(account.starting_balance)}</div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Loss Limits */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.15 }}
+          className="grid grid-cols-1 md:grid-cols-2 gap-4"
+        >
+          <Card className="gradient-card shadow-trading border-border/30">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-white">
+                Günlük Kayıp Limiti
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold loss-text">
+                {formatCurrency(account.daily_loss_limit || 0)}
+              </div>
+              <div className="text-sm text-white/80 font-medium mt-1">Günlük risk limiti</div>
+            </CardContent>
+          </Card>
+
+          <Card className="gradient-card shadow-trading border-border/30">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-white">
+                Maksimum Kayıp Limiti
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold loss-text">
+                {formatCurrency(account.max_loss_amount || 0)}
+              </div>
+              <div className="text-sm text-white/80 font-medium mt-1">Toplam risk limiti</div>
             </CardContent>
           </Card>
         </motion.div>
@@ -213,13 +297,13 @@ export default function AccountDetail() {
               <CardContent>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <div className="text-sm text-muted-foreground">Funded Eşiği</div>
-                    <div className="text-xl font-bold">
+                    <div className="text-sm text-white/80 font-medium">Funded Eşiği</div>
+                    <div className="text-xl font-bold text-white">
                       {formatCurrency(account.funded_threshold || 0)}
                     </div>
                   </div>
                   <div>
-                    <div className="text-sm text-muted-foreground">Kalan Tutar</div>
+                    <div className="text-sm text-white/80 font-medium">Kalan Tutar</div>
                     <div className="text-xl font-bold text-info">
                       {formatCurrency(metrics.remaining_to_funded)}
                     </div>
@@ -241,26 +325,34 @@ export default function AccountDetail() {
                 <CardTitle className="text-profit">Funded Hesap Durumu</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                   {account.profit_target && (
                     <div>
-                      <div className="text-sm text-muted-foreground">Kâr Hedefi</div>
-                      <div className="text-xl font-bold">
+                      <div className="text-sm text-white/80 font-medium">Kâr Hedefi</div>
+                      <div className="text-xl font-bold text-white">
                         {formatCurrency(account.profit_target)}
                       </div>
                     </div>
                   )}
                   {metrics.remaining_to_profit_target !== undefined && (
                     <div>
-                      <div className="text-sm text-muted-foreground">Hedefe Kalan</div>
+                      <div className="text-sm text-white/80 font-medium">Hedefe Kalan</div>
                       <div className="text-xl font-bold text-profit">
                         {formatCurrency(metrics.remaining_to_profit_target)}
                       </div>
                     </div>
                   )}
+                  {metrics.daily_loss_remaining !== undefined && (
+                    <div>
+                      <div className="text-sm text-white/80 font-medium">Günlük Limit Kalan</div>
+                      <div className="text-xl font-bold text-warning">
+                        {formatCurrency(metrics.daily_loss_remaining)}
+                      </div>
+                    </div>
+                  )}
                   {account.max_loss_amount && (
                     <div>
-                      <div className="text-sm text-muted-foreground">Max Kayıp Limiti</div>
+                      <div className="text-sm text-white/80 font-medium">Max Kayıp Limiti</div>
                       <div className="text-xl font-bold loss-text">
                         {formatCurrency(account.max_loss_amount)}
                       </div>
@@ -282,6 +374,8 @@ export default function AccountDetail() {
             accountId={account.id} 
             trades={trades} 
             isLoading={tradesLoading}
+            onEditTrade={handleEditTrade}
+            onDeleteTrade={handleDeleteTrade}
           />
         </motion.div>
 

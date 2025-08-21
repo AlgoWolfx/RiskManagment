@@ -24,7 +24,7 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useModalStore } from '@/store/ui-store';
-import { tradeRepository, accountRepository } from '@/lib/repo/localStorage';
+import { tradeRepository, accountRepository } from '@/lib/repo';
 import { createTradeSchema, CreateTradeFormData } from '@/lib/validations/schemas';
 import { updateAccountAfterTrade } from '@/lib/domain/risk';
 
@@ -50,43 +50,28 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
     resolver: zodResolver(createTradeSchema),
     defaultValues: {
       side: 'LONG',
+      trade_type: 'ENTRY',
       closed_at: format(new Date(), 'yyyy-MM-dd\'T\'HH:mm'),
     },
   });
 
-  const entryPrice = watch('entry_price');
-  const exitPrice = watch('exit_price');
-  const positionSize = watch('position_size');
-  const side = watch('side');
-
-  // Auto-calculate P&L when prices change
-  const calculatePnL = () => {
-    if (!entryPrice || !exitPrice || !positionSize) return { amount: 0, pct: 0 };
-    
-    let pnlAmount = 0;
-    if (side === 'LONG') {
-      pnlAmount = (exitPrice - entryPrice) * positionSize;
-    } else {
-      pnlAmount = (entryPrice - exitPrice) * positionSize;
-    }
-
-    const pnlPct = ((pnlAmount / (entryPrice * positionSize)) * 100);
-    
-    return {
-      amount: Number(pnlAmount.toFixed(2)),
-      pct: Number(pnlPct.toFixed(2)),
-    };
-  };
-
-  const calculatedPnL = calculatePnL();
+  const tradeType = watch('trade_type');
 
   const createTradeMutation = useMutation({
     mutationFn: async (tradeData: CreateTradeFormData) => {
+      // First get the account to determine its type
+      const account = await accountRepository.getById(accountId);
+      if (!account) {
+        throw new Error('Hesap bulunamadı');
+      }
+
       // Create the trade with all required fields
       const trade = await tradeRepository.create({
         account_id: accountId,
+        account_type: account.type, // Hesap tipini ekledik
         symbol: tradeData.symbol,
         side: tradeData.side,
+        trade_type: tradeData.trade_type,
         entry_price: tradeData.entry_price,
         exit_price: tradeData.exit_price,
         position_size: tradeData.position_size,
@@ -99,18 +84,28 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
       });
 
       // Update account balance and risk percentage
-      const account = await accountRepository.getById(accountId);
       if (account) {
-        const updatedAccount = updateAccountAfterTrade(account, trade);
-        await accountRepository.update(accountId, updatedAccount);
+        console.log('Güncelleme öncesi hesap:', account);
+        console.log('İşlem:', trade);
+        
+        const accountUpdates = updateAccountAfterTrade(account, trade);
+        console.log('Güncellenecek alanlar:', accountUpdates);
+        
+        await accountRepository.update(accountId, accountUpdates);
+        console.log('Hesap güncellendi');
       }
 
       return trade;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['trades', accountId] });
-      queryClient.invalidateQueries({ queryKey: ['account', accountId] });
-      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    onSuccess: async () => {
+      // Önce tüm cache'leri temizle
+      await queryClient.invalidateQueries({ queryKey: ['trades', accountId] });
+      await queryClient.invalidateQueries({ queryKey: ['account', accountId] });
+      await queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      
+      // Cache'i zorla yenile
+      await queryClient.refetchQueries({ queryKey: ['account', accountId] });
+      await queryClient.refetchQueries({ queryKey: ['accounts'] });
       
       toast({
         title: 'İşlem eklendi',
@@ -130,12 +125,7 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
   });
 
   const onSubmit = (data: CreateTradeFormData) => {
-    const finalTradeData = {
-      ...data,
-      pnl_amount: calculatedPnL.amount || data.pnl_amount,
-      pnl_pct: calculatedPnL.pct || data.pnl_pct,
-    };
-    createTradeMutation.mutate(finalTradeData);
+    createTradeMutation.mutate(data);
   };
 
   return (
@@ -154,7 +144,7 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
           onSubmit={handleSubmit(onSubmit)}
           className="space-y-4"
         >
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-2">
               <Label htmlFor="symbol">Sembol</Label>
               <Input
@@ -181,6 +171,30 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
                     <SelectContent>
                       <SelectItem value="LONG">LONG</SelectItem>
                       <SelectItem value="SHORT">SHORT</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="trade_type">İşlem Türü</Label>
+              <Controller
+                name="trade_type"
+                control={control}
+                render={({ field }) => (
+                  <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <SelectTrigger className={
+                      tradeType === 'TP' ? 'text-green-500 border-green-500' :
+                      tradeType === 'SL' ? 'text-red-500 border-red-500' :
+                      'text-yellow-500 border-yellow-500'
+                    }>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ENTRY" className="text-yellow-500">ENTRY</SelectItem>
+                      <SelectItem value="TP" className="text-green-500">TP</SelectItem>
+                      <SelectItem value="SL" className="text-red-500">SL</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -235,30 +249,39 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
             )}
           </div>
 
-          {/* Calculated P&L Display */}
-          {entryPrice && exitPrice && positionSize && (
-            <div className="p-3 rounded-lg gradient-card border">
-              <div className="text-sm font-medium mb-2">Hesaplanan P&L</div>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span className="text-muted-foreground">Miktar: </span>
-                  <span className={`font-semibold ${
-                    calculatedPnL.amount >= 0 ? 'profit-text' : 'loss-text'
-                  }`}>
-                    ${calculatedPnL.amount}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Yüzde: </span>
-                  <span className={`font-semibold ${
-                    calculatedPnL.pct >= 0 ? 'profit-text' : 'loss-text'
-                  }`}>
-                    %{calculatedPnL.pct}
-                  </span>
-                </div>
-              </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="pnl_amount">P&L Miktarı ($)</Label>
+              <Input
+                id="pnl_amount"
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                {...register('pnl_amount', { valueAsNumber: true })}
+                className={errors.pnl_amount ? 'border-destructive' : ''}
+              />
+              {errors.pnl_amount && (
+                <p className="text-sm text-destructive">{errors.pnl_amount.message}</p>
+              )}
             </div>
-          )}
+
+            <div className="space-y-2">
+              <Label htmlFor="pnl_pct">P&L Yüzdesi (%)</Label>
+              <Input
+                id="pnl_pct"
+                type="number"
+                step="0.01"
+                placeholder="0.00"
+                {...register('pnl_pct', { valueAsNumber: true })}
+                className={errors.pnl_pct ? 'border-destructive' : ''}
+              />
+              {errors.pnl_pct && (
+                <p className="text-sm text-destructive">{errors.pnl_pct.message}</p>
+              )}
+            </div>
+          </div>
+
+
 
           <div className="space-y-2">
             <Label htmlFor="risk_used_pct">Kullanılan Risk (%)</Label>

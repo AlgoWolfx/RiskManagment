@@ -3,31 +3,46 @@
 export type AccountType = "PreFunded" | "Funded";
 
 export type TradeSide = "LONG" | "SHORT";
+export type TradeType = "ENTRY" | "TP" | "SL";
 
-export interface Account {
+// Base account interface
+export interface BaseAccount {
   id: string;
   name: string;
-  type: AccountType;
   starting_balance: number;
   current_balance: number;
   risk_current_pct: number;
   created_at: string;
   updated_at: string;
-  
-  // PreFunded specific
-  funded_threshold?: number;
-  
-  // Funded specific
-  daily_loss_limit?: number;
-  max_loss_amount?: number;
-  profit_target?: number;
+  user_id?: string;
 }
+
+// PreFunded account interface
+export interface PreFundedAccount extends BaseAccount {
+  type: "PreFunded";
+  funded_threshold: number;
+  daily_loss_limit: number;
+  max_loss_amount: number;
+}
+
+// Funded account interface
+export interface FundedAccount extends BaseAccount {
+  type: "Funded";
+  daily_loss_limit: number;
+  max_loss_amount: number;
+  profit_target: number;
+}
+
+// Union type for all accounts
+export type Account = PreFundedAccount | FundedAccount;
 
 export interface Trade {
   id: string;
   account_id: string;
+  account_type: AccountType; // Yeni eklenen alan
   symbol: string;
   side: TradeSide;
+  trade_type: TradeType;
   entry_price: number;
   exit_price: number;
   position_size?: number;
@@ -48,6 +63,8 @@ export interface AccountMetrics {
   daily_loss_limit_reached: boolean;
   remaining_to_funded?: number;
   remaining_to_profit_target?: number;
+  daily_loss_remaining?: number;
+  daily_pnl?: number;
 }
 
 // UI State types
@@ -88,6 +105,7 @@ export interface CreateAccountFormData {
 export interface CreateTradeFormData {
   symbol: string;
   side: TradeSide;
+  trade_type: TradeType;
   entry_price: number;
   exit_price: number;
   position_size?: number;

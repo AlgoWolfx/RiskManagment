@@ -15,7 +15,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useModalStore } from '@/store/ui-store';
-import { tradeRepository } from '@/lib/repo/localStorage';
+import { tradeRepository } from '@/lib/repo';
 import { formatCurrency } from '@/lib/domain/risk';
 import { DailyTradeData } from '@/lib/domain/types';
 

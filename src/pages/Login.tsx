@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useAuth } from '@/providers/AuthProvider';
 import { useToast } from '@/hooks/use-toast';
 
 const loginSchema = z.object({
@@ -21,7 +22,9 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
+  
   const navigate = useNavigate();
+  const { signIn } = useAuth();
   const { toast } = useToast();
 
   const {
@@ -34,13 +37,7 @@ export default function Login() {
 
   const onSubmit = async (data: LoginFormData) => {
     try {
-      // Simulate authentication delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Store simple auth state
-      localStorage.setItem('isAuthenticated', 'true');
-      localStorage.setItem('userEmail', data.email);
-      
+      await signIn(data.email, data.password);
       toast({
         title: 'Giriş başarılı! 🚀',
         description: 'Uzay trading platformuna hoş geldiniz...',
@@ -164,7 +161,7 @@ export default function Login() {
                 transition={{ delay: 0.4 }}
                 className="space-y-3"
               >
-                <Label htmlFor="email" className="text-foreground font-semibold">
+                <Label htmlFor="email" className="text-white font-semibold text-base">
                   E-posta Adresi
                 </Label>
                 <Input
@@ -195,7 +192,7 @@ export default function Login() {
                 transition={{ delay: 0.5 }}
                 className="space-y-3"
               >
-                <Label htmlFor="password" className="text-foreground font-semibold">
+                <Label htmlFor="password" className="text-white font-semibold text-base">
                   Şifre
                 </Label>
                 <div className="relative">

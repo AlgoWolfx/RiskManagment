@@ -154,5 +154,9 @@ export class LocalStorageTradeRepository implements TradeRepository {
 }
 
 // Repository instances
-export const accountRepository = new LocalStorageAccountRepository();
-export const tradeRepository = new LocalStorageTradeRepository();
+export const localAccountRepository = new LocalStorageAccountRepository();
+export const localTradeRepository = new LocalStorageTradeRepository();
+
+// For backward compatibility
+export const accountRepository = localAccountRepository;
+export const tradeRepository = localTradeRepository;

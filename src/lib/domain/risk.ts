@@ -1,6 +1,7 @@
 // Risk management algorithm implementation
 
 import { Account, Trade, AccountType, AccountMetrics } from './types';
+import { riskEngine } from '../engine/riskEngine';
 
 // Risk constants
 export const RISK_CONSTANTS = {
@@ -26,13 +27,13 @@ export function calculateNewRiskPercentage(
   let newRiskPct = currentRiskPct;
   
   if (pnlAmount > 0) {
-    // Winning trade: increase by 0.25%
+    // Kazanç: %0.25 artır
     newRiskPct = Math.min(currentRiskPct + RISK_CONSTANTS.ADJUSTMENT_STEP, maxRisk);
   } else if (pnlAmount < 0) {
-    // Losing trade: decrease by 0.25%
+    // Zarar: %0.25 azalt
     newRiskPct = Math.max(currentRiskPct - RISK_CONSTANTS.ADJUSTMENT_STEP, RISK_CONSTANTS.MINIMUM_RISK_PCT);
   }
-  // Breakeven trade: maintain current percentage
+  // Breakeven trade: mevcut yüzdeyi koru
   
   return Number(newRiskPct.toFixed(2));
 }
@@ -45,10 +46,15 @@ export function calculateDailyRiskAmount(balance: number, riskPct: number): numb
 }
 
 /**
- * Calculate account metrics
+ * Calculate account metrics based on scenarios
  */
 export function calculateAccountMetrics(account: Account, trades: Trade[]): AccountMetrics {
   const dailyRiskAmount = calculateDailyRiskAmount(account.current_balance, account.risk_current_pct);
+  
+  // Calculate daily P&L for funded accounts
+  const todayTrades = getTodayTrades(trades);
+  const dailyPnL = todayTrades.reduce((sum, trade) => sum + trade.pnl_amount, 0);
+  const dailyLossUsed = Math.abs(Math.min(0, dailyPnL));
   
   const baseMetrics: AccountMetrics = {
     equity: account.current_balance,
@@ -68,15 +74,19 @@ export function calculateAccountMetrics(account: Account, trades: Trade[]): Acco
   // Funded specific calculations
   if (account.type === 'Funded') {
     const totalLoss = account.starting_balance - account.current_balance;
+    const totalProfit = account.current_balance - account.starting_balance;
     
     const fundedMetrics: AccountMetrics = {
       ...baseMetrics,
       max_loss_reached: account.max_loss_amount ? totalLoss >= account.max_loss_amount : false,
-      daily_loss_limit_reached: false, // Would need daily trades to calculate
+      daily_loss_limit_reached: account.daily_loss_limit ? dailyLossUsed >= account.daily_loss_limit : false,
+      daily_loss_remaining: account.daily_loss_limit ? Math.max(0, account.daily_loss_limit - dailyLossUsed) : undefined,
+      daily_pnl: dailyPnL,
     };
 
+    // Hedef kâr hesaplama - senaryoya göre net kâr hesabı
     if (account.profit_target) {
-      fundedMetrics.remaining_to_profit_target = Math.max(0, account.profit_target - account.current_balance);
+      fundedMetrics.remaining_to_profit_target = Math.max(0, account.profit_target - totalProfit);
     }
 
     return fundedMetrics;
@@ -86,9 +96,31 @@ export function calculateAccountMetrics(account: Account, trades: Trade[]): Acco
 }
 
 /**
+ * Get today's trades for daily calculations
+ */
+function getTodayTrades(trades: Trade[]): Trade[] {
+  const today = new Date().toISOString().split('T')[0];
+  return trades.filter(trade => trade.closed_at.startsWith(today));
+}
+
+/**
+ * Calculate advanced account metrics with risk engine
+ */
+export function calculateAdvancedAccountMetrics(account: Account, trades: Trade[]) {
+  return riskEngine.calculateAccountRisk(account, trades);
+}
+
+/**
+ * Get suggested risk for next trade
+ */
+export function getSuggestedRisk(account: Account, trades: Trade[]): number {
+  return riskEngine.calculateSuggestedRisk(account, trades);
+}
+
+/**
  * Update account balance after a trade
  */
-export function updateAccountAfterTrade(account: Account, trade: Trade): Account {
+export function updateAccountAfterTrade(account: Account, trade: Trade): Partial<Account> {
   const newBalance = Number((account.current_balance + trade.pnl_amount).toFixed(2));
   const newRiskPct = calculateNewRiskPercentage(
     account.risk_current_pct,
@@ -96,8 +128,8 @@ export function updateAccountAfterTrade(account: Account, trade: Trade): Account
     account.type
   );
 
+  // Sadece güncellenecek alanları döndür
   return {
-    ...account,
     current_balance: newBalance,
     risk_current_pct: newRiskPct,
     updated_at: new Date().toISOString(),
