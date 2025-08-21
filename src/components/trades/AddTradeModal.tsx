@@ -85,14 +85,8 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
 
       // Update account balance and risk percentage
       if (account) {
-        console.log('Güncelleme öncesi hesap:', account);
-        console.log('İşlem:', trade);
-        
         const accountUpdates = updateAccountAfterTrade(account, trade);
-        console.log('Güncellenecek alanlar:', accountUpdates);
-        
         await accountRepository.update(accountId, accountUpdates);
-        console.log('Hesap güncellendi');
       }
 
       return trade;

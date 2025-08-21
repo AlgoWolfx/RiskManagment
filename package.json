@@ -1,7 +1,25 @@
 {
-  "name": "vite_react_shadcn_ts",
-  "private": true,
-  "version": "0.0.0",
+  "name": "trade-pusula-21",
+  "private": false,
+  "version": "1.0.0",
+  "description": "Profesyonel Trading Hesap Yönetimi ve Risk Kontrolü Platformu",
+  "author": "AlgoWolfx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlgoWolfx/trade-pusula-21.git"
+  },
+  "homepage": "https://github.com/AlgoWolfx/trade-pusula-21#readme",
+  "keywords": [
+    "trading",
+    "risk-management",
+    "prefunded",
+    "funded",
+    "react",
+    "typescript",
+    "supabase",
+    "tailwindcss"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
