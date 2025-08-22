@@ -1,23 +1,80 @@
-Senaryo 1 — PreFunded hesap (başlangıç 100.000$, funded eşiği 110.000$, başlangıç risk %1.00)
 
-İşlem 1: −1.000$ zarar. Yeni bakiye 99.000$. Sonraki risk %0,75. Bir sonraki işlem için risk tutarı 99.000 × %0,75 = 742,50$.
+Risk Motoru — Basit İşleyiş (TP / SL / ENTRY)
 
-Dashboard kartı: Güncel Bakiye 99.000$, Önerilen Risk %0,75, Risk Tutarı 742,50$, Funded’a kalan 110.000 − 99.000 = 11.000$.
+Varsayımlar
 
-İşlem 2: +742,50$ kâr. Yeni bakiye 99.742,50$. Sonraki risk %1,00. Bir sonraki işlem için risk tutarı 99.742,50 × %1,00 ≈ 997,43$.
+Her işlemde bir işlem tipi vardır: tp (take profit), sl (stop loss), entry.
 
-Dashboard kartı: Güncel Bakiye 99.742,50$, Önerilen Risk %1,00, Risk Tutarı ≈ 997,43$, Funded’a kalan 110.000 − 99.742,50 = 10.257,50$.
+TP/SL işlemlerinde tutar ($) girilir (ör. amount_usd); entry’de girilse bile hesaplanmaya katılmaz.
 
-Hesap detayı başlık chip’leri (o an): Bakiye 99.742,50$, Risk %1,00, Risk Tutarı ≈ 997,43$.
+Hesap tipi: PreFunded veya Funded.
 
-Senaryo 2 — Funded hesap (başlangıç 100.000$, günlük kayıp limiti 2.000$, maks. kayıp 5.000$, hedef kâr 15.000$, başlangıç risk %1.00, üst limit %1,25)
+Risk yüzdesi başlangıçta %1.00’dır. Adım: %0.25.
+Alt limit: %0.25. Üst limit: PreFunded %2.00, Funded %1.25.
 
-İşlem 1: +1.000$ kâr. Yeni bakiye 101.000$. Sonraki risk %1,25 (üst limite kadar artar). Bir sonraki işlem için risk tutarı 101.000 × %1,25 = 1.262,50$. Hedefe kalan 15.000 − 1.000 = 14.000$.
+1) Güncel Bakiye (Balance) Güncelleme
 
-Dashboard kartı: Güncel Bakiye 101.000$, Önerilen Risk %1,25, Risk Tutarı 1.262,50$, Hedef kâra kalan 14.000$, Günlük kayıp limiti 2.000$ (bugün kullanılan 0$).
+tp ⇒ bakiye += amount_usd
 
-İşlem 2: −1.262,50$ zarar. Yeni bakiye 99.737,50$. Sonraki risk %1,00 (1,25 − 0,25). Net kâr hedefi için kalan: 15.000 − (1.000 − 1.262,50) = 15.262,50$. Bugünkü net PnL −1.262,50$, günlük limitte kalan 2.000 − 1.262,50 = 737,50$.
+sl ⇒ bakiye -= amount_usd
 
-Dashboard kartı: Güncel Bakiye 99.737,50$, Önerilen Risk %1,00, Risk Tutarı ≈ 997,38$, Hedef kâra kalan 15.262,50$, Günlük kayıp limiti kalan 737,50$.
+entry ⇒ bakiye değişmez
 
-Hesap detayı başlık chip’leri (o an): Bakiye 99.737,50$, Risk %1,00, Risk Tutarı ≈ 997,38$.
+Not: Bakiye her zaman 2 ondalıka yuvarlanır.
+
+2) Risk Yüzdesi Güncelleme
+
+tp ⇒ risk% = min(risk% + 0.25, risk_max)
+
+sl ⇒ risk% = max(risk% - 0.25, 0.25)
+
+entry ⇒ risk% değişmez
+
+Risk Tutarı ($) = güncel bakiye × risk% / 100 (2 ondalık).
+Risk % %0,25’e indiği anda bir kez “Stratejini gözden geçir” diyaloğu göster (risk tekrar artana kadar yeniden gösterme).
+
+3) Hedef / Funded İlerlemesi
+
+Tüm ilerleme yalnızca TP/SL ile hesaplanır:
+
+tp ⇒ progress_usd += amount_usd
+
+sl ⇒ progress_usd -= amount_usd
+
+entry ⇒ progress_usd değişmez
+
+PreFunded hesaplarda (funded eşiğine ilerleme):
+
+Kalan = max(0, funded_threshold - (starting_balance + progress_usd))
+
+Kalan = 0 olduğunda: havaifişek + balon efektini bir kez tetikle.
+
+Funded hesaplarda (kâr hedefine ilerleme):
+
+Kalan = max(0, profit_target - progress_usd)
+
+Kalan = 0 olduğunda: havaifişek efektini bir kez tetikle.
+
+Tekrarlamayı önlemek için her hesapta celebration_shown gibi bir bayrak tut; kalan tekrar >0 olursa bayrağı sıfırla.
+
+4) Kart ve Detay Ekranı (UI’de ne göstereceğiz)
+
+Dashboard Hesap Kartı
+
+Güncel Bakiye ($)
+
+Önerilen Risk (%) ve Risk Tutarı ($)
+
+PreFunded: “Funded’a kalan: $X”
+
+Funded: “Hedef kâra kalan: $Y”
+
+Aksiyonlar: “İşlem Ekle”, “Detay”
+
+Hesap Detayı / Header Chip’leri
+
+Bakiye ($) • Risk % • Risk Tutarı ($)
+
+PreFunded: Funded eşiği ve Kalan
+
+Funded: Hedef Kâr ve Kalan

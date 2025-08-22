@@ -39,17 +39,44 @@ export function calculateNewRiskPercentage(
 }
 
 /**
- * Calculate recommended daily risk amount
+ * Calculate daily risk amount
  */
-export function calculateDailyRiskAmount(balance: number, riskPct: number): number {
-  return Number((balance * (riskPct / 100)).toFixed(2));
+export function calculateDailyRiskAmount(balance: number, riskPercentage: number): number {
+  if (!balance || !riskPercentage) return 0;
+  return Number((balance * riskPercentage / 100).toFixed(2));
+}
+
+/**
+ * Calculate total progress USD from TP/SL trades only
+ */
+export function calculateProgressUSD(trades: Trade[]): number {
+  if (!trades || trades.length === 0) return 0;
+  
+  return trades
+    .filter(trade => trade.trade_type === 'TP' || trade.trade_type === 'SL')
+    .reduce((sum, trade) => sum + trade.pnl_amount, 0);
 }
 
 /**
  * Calculate account metrics based on scenarios
  */
 export function calculateAccountMetrics(account: Account, trades: Trade[]): AccountMetrics {
+  // Güvenlik kontrolü
+  if (!account) {
+    return {
+      equity: 0,
+      daily_risk_amount: 0,
+      max_loss_reached: false,
+      daily_loss_limit_reached: false,
+      remaining_to_funded: 0,
+      remaining_to_profit_target: 0,
+      daily_loss_remaining: 0,
+      daily_pnl: 0,
+    };
+  }
+
   const dailyRiskAmount = calculateDailyRiskAmount(account.current_balance, account.risk_current_pct);
+  const progressUSD = calculateProgressUSD(trades);
   
   // Calculate daily P&L for funded accounts
   const todayTrades = getTodayTrades(trades);
@@ -65,9 +92,15 @@ export function calculateAccountMetrics(account: Account, trades: Trade[]): Acco
 
   // PreFunded specific calculations
   if (account.type === 'PreFunded' && account.funded_threshold) {
+    // Kalan = max(0, funded_threshold - (starting_balance + progress_usd))
+    const remainingToFunded = Math.max(0, account.funded_threshold - (account.starting_balance + progressUSD));
+    
     return {
       ...baseMetrics,
-      remaining_to_funded: Math.max(0, account.funded_threshold - account.current_balance),
+      remaining_to_funded: remainingToFunded,
+      daily_loss_limit_reached: account.daily_loss_limit ? dailyLossUsed >= account.daily_loss_limit : false,
+      daily_loss_remaining: account.daily_loss_limit ? Math.max(0, account.daily_loss_limit - dailyLossUsed) : undefined,
+      daily_pnl: dailyPnL,
     };
   }
 
@@ -84,9 +117,10 @@ export function calculateAccountMetrics(account: Account, trades: Trade[]): Acco
       daily_pnl: dailyPnL,
     };
 
-    // Hedef kâr hesaplama - senaryoya göre net kâr hesabı
+    // Hedef kâr hesaplama - progress_usd kullanarak
     if (account.profit_target) {
-      fundedMetrics.remaining_to_profit_target = Math.max(0, account.profit_target - totalProfit);
+      // Kalan = max(0, profit_target - progress_usd)
+      fundedMetrics.remaining_to_profit_target = Math.max(0, account.profit_target - progressUSD);
     }
 
     return fundedMetrics;
@@ -121,7 +155,18 @@ export function getSuggestedRisk(account: Account, trades: Trade[]): number {
  * Update account balance after a trade
  */
 export function updateAccountAfterTrade(account: Account, trade: Trade): Partial<Account> {
-  const newBalance = Number((account.current_balance + trade.pnl_amount).toFixed(2));
+  let newBalance = account.current_balance;
+  
+  // Bakiye güncelleme kuralları
+  if (trade.trade_type === 'TP') {
+    newBalance += trade.pnl_amount;
+  } else if (trade.trade_type === 'SL') {
+    newBalance += trade.pnl_amount; // pnl_amount zaten negatif
+  }
+  // ENTRY işlemlerinde bakiye değişmez
+  
+  newBalance = Number(newBalance.toFixed(2));
+  
   const newRiskPct = calculateNewRiskPercentage(
     account.risk_current_pct,
     trade.pnl_amount,
@@ -160,6 +205,23 @@ export function shouldShowMinimumRiskDialog(
 }
 
 /**
+ * Check if celebration should be shown
+ */
+export function shouldShowCelebration(account: Account, trades: Trade[]): boolean {
+  if (!account || !trades) return false;
+  
+  const metrics = calculateAccountMetrics(account, trades);
+  
+  if (account.type === 'PreFunded') {
+    return metrics.remaining_to_funded === 0;
+  } else if (account.type === 'Funded') {
+    return metrics.remaining_to_profit_target === 0;
+  }
+  
+  return false;
+}
+
+/**
  * Format percentage for display
  */
 export function formatPercentage(value: number): string {
@@ -185,4 +247,45 @@ export function formatNumber(value: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+/**
+ * Debug function to log risk engine calculations
+ */
+export function debugRiskCalculation(account: Account, trade: Trade, trades: Trade[]) {
+  console.log('=== Risk Engine Debug ===');
+  console.log('Account:', {
+    id: account.id,
+    name: account.name,
+    type: account.type,
+    starting_balance: account.starting_balance,
+    current_balance: account.current_balance,
+    risk_current_pct: account.risk_current_pct,
+    funded_threshold: account.type === 'PreFunded' ? account.funded_threshold : undefined,
+    profit_target: account.type === 'Funded' ? account.profit_target : undefined
+  });
+  
+  console.log('New Trade:', {
+    trade_type: trade.trade_type,
+    pnl_amount: trade.pnl_amount,
+    symbol: trade.symbol
+  });
+  
+  const progressUSD = calculateProgressUSD(trades);
+  console.log('Progress USD:', progressUSD);
+  
+  const accountUpdates = updateAccountAfterTrade(account, trade);
+  console.log('Account Updates:', accountUpdates);
+  
+  const updatedAccount = {
+    ...account,
+    ...accountUpdates
+  } as Account;
+  
+  const newMetrics = calculateAccountMetrics(updatedAccount, trades);
+  console.log('New Metrics:', newMetrics);
+  
+  const shouldCelebrate = shouldShowCelebration(updatedAccount, trades);
+  console.log('Should Celebrate:', shouldCelebrate);
+  console.log('=== End Debug ===');
 }

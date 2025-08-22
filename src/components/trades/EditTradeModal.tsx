@@ -24,21 +24,20 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { useModalStore } from '@/store/ui-store';
 import { tradeRepository, accountRepository } from '@/lib/repo';
 import { createTradeSchema, CreateTradeFormData } from '@/lib/validations/schemas';
-import { updateAccountAfterTrade, debugRiskCalculation, calculateAccountMetrics } from '@/lib/domain/risk';
+import { Trade } from '@/lib/domain/types';
+import { updateAccountAfterTrade, calculateAccountMetrics } from '@/lib/domain/risk';
 
-interface AddTradeModalProps {
-  accountId: string;
+interface EditTradeModalProps {
+  trade: Trade | null;
+  isOpen: boolean;
+  onClose: () => void;
 }
 
-export default function AddTradeModal({ accountId }: AddTradeModalProps) {
-  const { isAddTradeOpen, selectedAccountId, setAddTradeOpen } = useModalStore();
+export default function EditTradeModal({ trade, isOpen, onClose }: EditTradeModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-
-  const isOpen = isAddTradeOpen && selectedAccountId === accountId;
 
   const {
     register,
@@ -57,6 +56,26 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
     },
   });
 
+  // Trade değiştiğinde formu güncelle
+  useEffect(() => {
+    if (trade) {
+      reset({
+        symbol: trade.symbol,
+        side: trade.side,
+        trade_type: trade.trade_type,
+        entry_price: trade.entry_price,
+        exit_price: trade.exit_price,
+        position_size: trade.position_size,
+        pnl_amount: trade.pnl_amount,
+        pnl_pct: trade.pnl_pct,
+        risk_used_pct: trade.risk_used_pct,
+        note: trade.note || '',
+        screenshot_url: trade.screenshot_url || '',
+        closed_at: format(new Date(trade.closed_at), 'yyyy-MM-dd\'T\'HH:mm'),
+      });
+    }
+  }, [trade, reset]);
+
   const tradeType = watch('trade_type');
   const pnlAmount = watch('pnl_amount');
 
@@ -71,16 +90,11 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
     }
   }, [tradeType, pnlAmount, setValue, toast]);
 
-  const createTradeMutation = useMutation({
+  const updateTradeMutation = useMutation({
     mutationFn: async (tradeData: CreateTradeFormData) => {
-      // First get the account to determine its type
-      const account = await accountRepository.getById(accountId);
-      if (!account) {
-        throw new Error('Hesap bulunamadı');
+      if (!trade) {
+        throw new Error('Düzenlenecek işlem bulunamadı');
       }
-
-      // Get existing trades for debug and daily limit check
-      const existingTrades = await tradeRepository.getByAccountId(accountId);
 
       // SL işlemlerinde P&L'nin negatif olduğundan emin ol
       let finalPnlAmount = tradeData.pnl_amount;
@@ -88,18 +102,28 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
         finalPnlAmount = -Math.abs(finalPnlAmount);
       }
 
-      // Günlük kayıp limiti kontrolü
-      const metrics = calculateAccountMetrics(account, existingTrades);
+      // Önce hesabı al
+      const account = await accountRepository.getById(trade.account_id);
+      if (!account) {
+        throw new Error('Hesap bulunamadı');
+      }
+
+      // Günlük kayıp limiti kontrolü (mevcut işlem hariç)
+      const existingTrades = await tradeRepository.getByAccountId(trade.account_id);
+      const tradesWithoutCurrent = existingTrades.filter(t => t.id !== trade.id);
+      const metrics = calculateAccountMetrics(account, tradesWithoutCurrent);
       
       // Eğer günlük kayıp limiti aşılmışsa ve yeni işlem zarar edecekse uyarı ver
       if (metrics.daily_loss_limit_reached && finalPnlAmount < 0) {
         throw new Error('Günlük kayıp limitini aştınız. Yeni zarar işlemi ekleyemezsiniz.');
       }
 
-      // Create the trade with all required fields
-      const trade = await tradeRepository.create({
-        account_id: accountId,
-        account_type: account.type, // Hesap tipini ekledik
+      // Eski işlemin P&L'sini hesap bakiyesinden çıkar
+      const oldPnlAmount = trade.pnl_amount;
+      const correctedBalance = account.current_balance - oldPnlAmount;
+
+      // Update the trade
+      const updatedTrade = await tradeRepository.update(trade.id, {
         symbol: tradeData.symbol,
         side: tradeData.side,
         trade_type: tradeData.trade_type,
@@ -112,90 +136,55 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
         note: tradeData.note,
         screenshot_url: tradeData.screenshot_url,
         closed_at: tradeData.closed_at,
+        account_type: trade.account_type, // Mevcut account_type'ı koru
       });
 
-      // Debug risk calculation
-      debugRiskCalculation(account, trade, [...existingTrades, trade]);
+      // Yeni P&L'yi düzeltilmiş bakiyeye ekle
+      const newBalance = correctedBalance + finalPnlAmount;
+      
+      // Hesabı güncelle
+      await accountRepository.update(trade.account_id, {
+        current_balance: newBalance,
+      });
 
-      // Update account balance and risk percentage
-      if (account) {
-        console.log('=== ACCOUNT UPDATE DEBUG ===');
-        console.log('Original account:', account);
-        console.log('Trade to apply:', trade);
-        
-        const accountUpdates = updateAccountAfterTrade(account, trade);
-        console.log('Account updates to apply:', accountUpdates);
-        
-        const updatedAccount = await accountRepository.update(accountId, accountUpdates);
-        console.log('Updated account from repository:', updatedAccount);
-        console.log('=== END ACCOUNT UPDATE DEBUG ===');
-      }
-
-      return trade;
+      return updatedTrade;
     },
     onSuccess: async () => {
-      console.log('=== CACHE UPDATE DEBUG ===');
-      
-      // Tüm cache'leri temizle ve yenile
-      await queryClient.invalidateQueries({ queryKey: ['trades', accountId] });
-      await queryClient.invalidateQueries({ queryKey: ['account', accountId] });
+      // Cache'leri temizle ve yenile
+      await queryClient.invalidateQueries({ queryKey: ['trades', trade?.account_id] });
+      await queryClient.invalidateQueries({ queryKey: ['account', trade?.account_id] });
       await queryClient.invalidateQueries({ queryKey: ['accounts'] });
       await queryClient.invalidateQueries({ queryKey: ['all-trades'] });
       
-      // Cache'i zorla yenile - daha agresif
-      await queryClient.refetchQueries({ queryKey: ['account', accountId], exact: true });
-      await queryClient.refetchQueries({ queryKey: ['accounts'], exact: true });
-      await queryClient.refetchQueries({ queryKey: ['trades', accountId], exact: true });
-      await queryClient.refetchQueries({ queryKey: ['all-trades'], exact: true });
-      
-      // Ek olarak tüm account ve trade cache'lerini temizle
-      await queryClient.removeQueries({ queryKey: ['account', accountId] });
-      await queryClient.removeQueries({ queryKey: ['trades', accountId] });
-      
-      // Kısa bir bekleme süresi
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Yeniden yükle
-      await queryClient.prefetchQuery({
-        queryKey: ['account', accountId],
-        queryFn: () => accountRepository.getById(accountId),
-      });
-      
-      await queryClient.prefetchQuery({
-        queryKey: ['trades', accountId],
-        queryFn: () => tradeRepository.getByAccountId(accountId),
-      });
-      
-      console.log('=== END CACHE UPDATE DEBUG ===');
-      
       toast({
-        title: 'İşlem eklendi',
-        description: 'Yeni işleminiz başarıyla kaydedildi.',
+        title: 'İşlem güncellendi',
+        description: 'İşlem başarıyla güncellendi.',
       });
       
-      setAddTradeOpen(false);
-      reset();
+      onClose();
     },
     onError: () => {
       toast({
         title: 'Hata',
-        description: 'İşlem kaydedilirken bir hata oluştu.',
+        description: 'İşlem güncellenirken bir hata oluştu.',
         variant: 'destructive',
       });
     },
   });
 
   const onSubmit = (data: CreateTradeFormData) => {
-    createTradeMutation.mutate(data);
+    updateTradeMutation.mutate(data);
   };
 
+  if (!trade) return null;
+
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && setAddTradeOpen(false)}>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto bg-gray-900 border-white/20">
         <DialogHeader>
-          <DialogTitle>Yeni İşlem Ekle</DialogTitle>
-          <DialogDescription>
-            İşlem detaylarını girin ve hesap bakiyenizi güncelleyin.
+          <DialogTitle className="text-white text-lg font-bold">İşlem Düzenle</DialogTitle>
+          <DialogDescription className="text-white/70">
+            İşlem detaylarını güncelleyin.
           </DialogDescription>
         </DialogHeader>
         
@@ -207,31 +196,31 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
         >
           <div className="grid grid-cols-3 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="symbol">Sembol</Label>
+              <Label htmlFor="symbol" className="text-white">Sembol</Label>
               <Input
                 id="symbol"
                 placeholder="EURUSD"
                 {...register('symbol')}
-                className={errors.symbol ? 'border-destructive' : ''}
+                className={`${errors.symbol ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
               />
               {errors.symbol && (
-                <p className="text-sm text-destructive">{errors.symbol.message}</p>
+                <p className="text-sm text-red-400">{errors.symbol.message}</p>
               )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="side">İşlem Yönü</Label>
+              <Label htmlFor="side" className="text-white">İşlem Yönü</Label>
               <Controller
                 name="side"
                 control={control}
                 render={({ field }) => (
                   <Select onValueChange={field.onChange} defaultValue={field.value}>
-                    <SelectTrigger>
+                    <SelectTrigger className="border-white/30 bg-white/10 text-white focus:border-blue-500">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="LONG">LONG</SelectItem>
-                      <SelectItem value="SHORT">SHORT</SelectItem>
+                    <SelectContent className="bg-gray-800 border-white/20">
+                      <SelectItem value="LONG" className="text-green-400">LONG</SelectItem>
+                      <SelectItem value="SHORT" className="text-blue-400">SHORT</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -239,23 +228,23 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="trade_type">İşlem Türü</Label>
+              <Label htmlFor="trade_type" className="text-white">İşlem Türü</Label>
               <Controller
                 name="trade_type"
                 control={control}
                 render={({ field }) => (
                   <Select onValueChange={field.onChange} defaultValue={field.value}>
-                    <SelectTrigger className={
-                      tradeType === 'TP' ? 'text-green-500 border-green-500' :
-                      tradeType === 'SL' ? 'text-red-500 border-red-500' :
-                      'text-yellow-500 border-yellow-500'
-                    }>
+                    <SelectTrigger className={`border-white/30 bg-white/10 text-white focus:border-blue-500 ${
+                      tradeType === 'TP' ? 'text-green-400 border-green-500/50' :
+                      tradeType === 'SL' ? 'text-red-400 border-red-500/50' :
+                      'text-yellow-400 border-yellow-500/50'
+                    }`}>
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="ENTRY" className="text-yellow-500">ENTRY</SelectItem>
-                      <SelectItem value="TP" className="text-green-500">TP</SelectItem>
-                      <SelectItem value="SL" className="text-red-500">SL</SelectItem>
+                    <SelectContent className="bg-gray-800 border-white/20">
+                      <SelectItem value="ENTRY" className="text-yellow-400">ENTRY</SelectItem>
+                      <SelectItem value="TP" className="text-green-400">TP</SelectItem>
+                      <SelectItem value="SL" className="text-red-400">SL</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -274,54 +263,54 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="entry_price">Giriş Fiyatı</Label>
+              <Label htmlFor="entry_price" className="text-white">Giriş Fiyatı</Label>
               <Input
                 id="entry_price"
                 type="number"
                 step="0.00001"
                 placeholder="1.0850"
                 {...register('entry_price', { valueAsNumber: true })}
-                className={errors.entry_price ? 'border-destructive' : ''}
+                className={`${errors.entry_price ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
               />
               {errors.entry_price && (
-                <p className="text-sm text-destructive">{errors.entry_price.message}</p>
+                <p className="text-sm text-red-400">{errors.entry_price.message}</p>
               )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="exit_price">Çıkış Fiyatı</Label>
+              <Label htmlFor="exit_price" className="text-white">Çıkış Fiyatı</Label>
               <Input
                 id="exit_price"
                 type="number"
                 step="0.00001"
                 placeholder="1.0875"
                 {...register('exit_price', { valueAsNumber: true })}
-                className={errors.exit_price ? 'border-destructive' : ''}
+                className={`${errors.exit_price ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
               />
               {errors.exit_price && (
-                <p className="text-sm text-destructive">{errors.exit_price.message}</p>
+                <p className="text-sm text-red-400">{errors.exit_price.message}</p>
               )}
             </div>
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="position_size">Pozisyon Büyüklüğü (Lot)</Label>
+            <Label htmlFor="position_size" className="text-white">Pozisyon Büyüklüğü (Lot)</Label>
             <Input
               id="position_size"
               type="number"
               step="0.01"
               placeholder="1.00"
               {...register('position_size', { valueAsNumber: true })}
-              className={errors.position_size ? 'border-destructive' : ''}
+              className={`${errors.position_size ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
             />
             {errors.position_size && (
-              <p className="text-sm text-destructive">{errors.position_size.message}</p>
+              <p className="text-sm text-red-400">{errors.position_size.message}</p>
             )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="pnl_amount">
+              <Label htmlFor="pnl_amount" className="text-white">
                 P&L Miktarı ($)
                 {tradeType === 'SL' && <span className="text-red-400 ml-1">*Negatif</span>}
               </Label>
@@ -331,104 +320,102 @@ export default function AddTradeModal({ accountId }: AddTradeModalProps) {
                 step="0.01"
                 placeholder={tradeType === 'SL' ? "-100.00" : "0.00"}
                 {...register('pnl_amount', { valueAsNumber: true })}
-                className={`${errors.pnl_amount ? 'border-destructive' : ''} ${
+                className={`${errors.pnl_amount ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500 ${
                   tradeType === 'SL' ? 'border-red-500/50' : ''
                 }`}
               />
               {errors.pnl_amount && (
-                <p className="text-sm text-destructive">{errors.pnl_amount.message}</p>
+                <p className="text-sm text-red-400">{errors.pnl_amount.message}</p>
               )}
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="pnl_pct">P&L Yüzdesi (%)</Label>
+              <Label htmlFor="pnl_pct" className="text-white">P&L Yüzdesi (%)</Label>
               <Input
                 id="pnl_pct"
                 type="number"
                 step="0.01"
                 placeholder="0.00"
                 {...register('pnl_pct', { valueAsNumber: true })}
-                className={errors.pnl_pct ? 'border-destructive' : ''}
+                className={`${errors.pnl_pct ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
               />
               {errors.pnl_pct && (
-                <p className="text-sm text-destructive">{errors.pnl_pct.message}</p>
+                <p className="text-sm text-red-400">{errors.pnl_pct.message}</p>
               )}
             </div>
           </div>
 
-
-
           <div className="space-y-2">
-            <Label htmlFor="risk_used_pct">Kullanılan Risk (%)</Label>
+            <Label htmlFor="risk_used_pct" className="text-white">Kullanılan Risk (%)</Label>
             <Input
               id="risk_used_pct"
               type="number"
               step="0.01"
               placeholder="1.00"
               {...register('risk_used_pct', { valueAsNumber: true })}
-              className={errors.risk_used_pct ? 'border-destructive' : ''}
+              className={`${errors.risk_used_pct ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
             />
             {errors.risk_used_pct && (
-              <p className="text-sm text-destructive">{errors.risk_used_pct.message}</p>
+              <p className="text-sm text-red-400">{errors.risk_used_pct.message}</p>
             )}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="closed_at">Kapanış Tarihi</Label>
+            <Label htmlFor="closed_at" className="text-white">Kapanış Tarihi</Label>
             <Input
               id="closed_at"
               type="datetime-local"
               {...register('closed_at')}
-              className={errors.closed_at ? 'border-destructive' : ''}
+              className={`${errors.closed_at ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
             />
             {errors.closed_at && (
-              <p className="text-sm text-destructive">{errors.closed_at.message}</p>
+              <p className="text-sm text-red-400">{errors.closed_at.message}</p>
             )}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="screenshot_url">TradingView Screenshot URL (Opsiyonel)</Label>
+            <Label htmlFor="screenshot_url" className="text-white">TradingView Screenshot URL (Opsiyonel)</Label>
             <Input
               id="screenshot_url"
               type="url"
               placeholder="https://tradingview.com/..."
               {...register('screenshot_url')}
-              className={errors.screenshot_url ? 'border-destructive' : ''}
+              className={`${errors.screenshot_url ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
             />
             {errors.screenshot_url && (
-              <p className="text-sm text-destructive">{errors.screenshot_url.message}</p>
+              <p className="text-sm text-red-400">{errors.screenshot_url.message}</p>
             )}
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="note">Not (Opsiyonel)</Label>
+            <Label htmlFor="note" className="text-white">Not (Opsiyonel)</Label>
             <Textarea
               id="note"
               placeholder="İşlem hakkında notlarınız..."
               {...register('note')}
-              className={`min-h-[80px] ${errors.note ? 'border-destructive' : ''}`}
+              className={`min-h-[80px] ${errors.note ? 'border-red-500' : 'border-white/30 bg-white/10 text-white'} focus:border-blue-500`}
             />
             {errors.note && (
-              <p className="text-sm text-destructive">{errors.note.message}</p>
+              <p className="text-sm text-red-400">{errors.note.message}</p>
             )}
           </div>
 
-          <div className="flex gap-2 pt-4">
+          <div className="flex gap-3 pt-4">
             <Button
               type="button"
               variant="outline"
-              onClick={() => setAddTradeOpen(false)}
-              className="flex-1"
+              onClick={onClose}
+              className="flex-1 border-gray-500/50 text-gray-300 hover:bg-gray-700/50 hover:text-white hover:border-gray-400/50 transition-all duration-200"
             >
               İptal
             </Button>
             <Button
               type="submit"
-              variant="trading-primary"
+              variant="default"
               disabled={isSubmitting}
-              className="flex-1"
+              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium transition-colors"
             >
-              {isSubmitting ? 'Kaydediliyor...' : 'İşlem Kaydet'}
+              {isSubmitting ? 'Güncelleniyor...' : 'Güncelle'}
             </Button>
           </div>
         </motion.form>

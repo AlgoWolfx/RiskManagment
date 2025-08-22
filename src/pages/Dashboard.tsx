@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Plus, TrendingUp, LogOut, Database } from 'lucide-react';
+import { Plus, TrendingUp, LogOut, Database, Target, Trophy } from 'lucide-react';
 import { useAuth } from '@/providers/AuthProvider';
 
 import { Button } from '@/components/ui/button';
@@ -14,7 +14,7 @@ import DataMigration from '@/components/admin/DataMigration';
 import { useModalStore } from '@/store/ui-store';
 import { useMinimumRiskDialog } from '@/store/ui-store';
 import { accountRepository, tradeRepository } from '@/lib/repo';
-import { formatCurrency } from '@/lib/domain/risk';
+import { formatCurrency, calculateProgressUSD } from '@/lib/domain/risk';
 import { useToast } from '@/hooks/use-toast';
 
 export default function Dashboard() {
@@ -35,11 +35,25 @@ export default function Dashboard() {
     queryFn: () => accountRepository.getAll(),
   });
 
+  // Fetch all trades for progress calculation
+  const { data: allTrades = [] } = useQuery({
+    queryKey: ['all-trades'],
+    queryFn: async () => {
+      const tradesPromises = accounts.map(account => 
+        tradeRepository.getByAccountId(account.id)
+      );
+      const allAccountTrades = await Promise.all(tradesPromises);
+      return allAccountTrades.flat();
+    },
+    enabled: accounts.length > 0,
+  });
+
   // Delete account mutation
   const deleteAccountMutation = useMutation({
     mutationFn: (accountId: string) => accountRepository.delete(accountId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['all-trades'] });
       toast({
         title: 'Hesap silindi',
         description: 'Hesap başarıyla silindi.',
@@ -54,11 +68,14 @@ export default function Dashboard() {
     },
   });
 
-  // Calculate dashboard metrics
+  // Calculate dashboard metrics with progress tracking
   const totalBalance = accounts.reduce((sum, account) => sum + account.current_balance, 0);
   const totalProfit = accounts.reduce((sum, account) => sum + (account.current_balance - account.starting_balance), 0);
   const fundedAccounts = accounts.filter(account => account.type === 'Funded').length;
   const prefundedAccounts = accounts.filter(account => account.type === 'PreFunded').length;
+  
+  // Calculate total progress from TP/SL trades
+  const totalProgressUSD = calculateProgressUSD(allTrades);
 
   // Check for minimum risk dialogs
   useEffect(() => {
@@ -170,7 +187,7 @@ export default function Dashboard() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-6"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6"
         >
           <Card className="gradient-card shadow-elevated border-border/30 hover:border-primary/30 transition-glow group">
             <CardHeader className="pb-3">
@@ -204,12 +221,29 @@ export default function Dashboard() {
 
           <Card className="gradient-card shadow-elevated border-border/30 hover:border-info/30 transition-glow group">
             <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium text-white flex items-center gap-2">
+                <Target className="h-4 w-4" />
+                Toplam İlerleme
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-info group-hover:animate-glow">
+                {formatCurrency(totalProgressUSD)}
+              </div>
+              <div className="text-sm text-white/80 mt-1 font-medium">
+                🎯 TP/SL İşlemleri
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="gradient-card shadow-elevated border-border/30 hover:border-warning/30 transition-glow group">
+            <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium text-white">
                 Hesap Durumu
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-info group-hover:animate-glow">
+              <div className="text-3xl font-bold text-warning group-hover:animate-glow">
                 {fundedAccounts + prefundedAccounts}
               </div>
               <div className="text-sm text-white/80 mt-1 font-medium">
@@ -259,20 +293,25 @@ export default function Dashboard() {
             transition={{ delay: 0.2 }}
             className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6"
           >
-            {accounts.map((account, index) => (
-              <motion.div
-                key={account.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 * index }}
-              >
-                <AccountCard 
-                  account={account} 
-                  trades={[]} 
-                  onDelete={handleDeleteAccount}
-                />
-              </motion.div>
-            ))}
+            {accounts.map((account, index) => {
+              // Get trades for this specific account
+              const accountTrades = allTrades.filter(trade => trade.account_id === account.id);
+              
+              return (
+                <motion.div
+                  key={account.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 * index }}
+                >
+                  <AccountCard 
+                    account={account} 
+                    trades={accountTrades} 
+                    onDelete={handleDeleteAccount}
+                  />
+                </motion.div>
+              );
+            })}
           </motion.div>
         )}
 
